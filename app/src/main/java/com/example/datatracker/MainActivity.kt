@@ -1,5 +1,7 @@
 package com.example.datatracker
 
+import android.app.DatePickerDialog
+import android.app.TimePickerDialog
 import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
@@ -10,9 +12,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import java.text.DecimalFormat
-import java.util.ArrayDeque
+import java.text.SimpleDateFormat
+import java.util.*
 
 class MainActivity : ComponentActivity() {
 
@@ -43,17 +47,22 @@ fun TrackerScreen(
     repository: DataRepository,
     onRequestPermission: () -> Unit
 ) {
+    val context = LocalContext.current
     var hasPermission by remember { mutableStateOf(repository.hasUsagePermission()) }
     var currentSpeedBps by remember { mutableLongStateOf(0L) }
     
     val minuteBuffer = remember { ArrayDeque<Long>(60) }
     var avgSpeedPerMinuteBps by remember { mutableLongStateOf(0L) }
 
+    // Starttidspunkt for målingen (standard: 24 timer tilbake)
     var historicalStartTime by remember { 
         mutableLongStateOf(System.currentTimeMillis() - 24 * 3600 * 1000) 
     }
     var totalHistoricalBytes by remember { mutableLongStateOf(0L) }
 
+    val dateFormatter = remember { SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()) }
+
+    // Lytter på sanntidsfart
     LaunchedEffect(Unit) {
         repository.getRealtimeSpeedFlow().collect { bytesThisSec ->
             currentSpeedBps = bytesThisSec
@@ -64,6 +73,7 @@ fun TrackerScreen(
         }
     }
 
+    // Henter databruk fra valgt starttidspunkt frem til nåværende øyeblikk
     LaunchedEffect(hasPermission, historicalStartTime) {
         if (hasPermission) {
             totalHistoricalBytes = repository.getMobileBytesBetween(
@@ -73,10 +83,43 @@ fun TrackerScreen(
         }
     }
 
+    // Funksjon som åpner dato- og deretter klokkeslettvelger
+    fun pickDateTime() {
+        val currentCalendar = Calendar.getInstance().apply { timeInMillis = historicalStartTime }
+        
+        DatePickerDialog(
+            context,
+            { _, year, month, dayOfMonth ->
+                val chosenCalendar = Calendar.getInstance().apply {
+                    set(Calendar.YEAR, year)
+                    set(Calendar.MONTH, month)
+                    set(Calendar.DAY_OF_MONTH, dayOfMonth)
+                }
+                
+                TimePickerDialog(
+                    context,
+                    { _, hourOfDay, minute ->
+                        chosenCalendar.set(Calendar.HOUR_OF_DAY, hourOfDay)
+                        chosenCalendar.set(Calendar.MINUTE, minute)
+                        chosenCalendar.set(Calendar.SECOND, 0)
+                        
+                        historicalStartTime = chosenCalendar.timeInMillis
+                    },
+                    currentCalendar.get(Calendar.HOUR_OF_DAY),
+                    currentCalendar.get(Calendar.MINUTE),
+                    true // 24-timers format
+                ).show()
+            },
+            currentCalendar.get(Calendar.YEAR),
+            currentCalendar.get(Calendar.MONTH),
+            currentCalendar.get(Calendar.DAY_OF_MONTH)
+        ).show()
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(24.dp),
+            .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
@@ -85,7 +128,7 @@ fun TrackerScreen(
         if (!hasPermission) {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
                 Column(Modifier.padding(16.dp)) {
-                    Text("Appen trenger tilgang for å lese dataforbruk over tid.")
+                    Text("Appen trenger bruksadgang for å telle mobildata.")
                     Spacer(Modifier.height(8.dp))
                     Button(onClick = onRequestPermission) {
                         Text("Gi tilgang i innstillinger")
@@ -94,6 +137,7 @@ fun TrackerScreen(
             }
         }
 
+        // Sanntid og snitt
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
                 Text("Sanntidsforbruk", style = MaterialTheme.typography.labelLarge)
@@ -101,30 +145,57 @@ fun TrackerScreen(
                     text = "${formatBytes(currentSpeedBps)}/s",
                     style = MaterialTheme.typography.displaySmall
                 )
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(6.dp))
                 Text(
-                    text = "Snitt siste minutt: ${formatBytes(avgSpeedPerMinuteBps)}/s",
+                    text = "Gjennomsnitt siste minutt: ${formatBytes(avgSpeedPerMinuteBps)}/s",
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
         }
 
+        // Egendefinert tidsrom
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
-                Text("Forbruk i tidsrom", style = MaterialTheme.typography.labelLarge)
+                Text("Forbruk i valgt periode", style = MaterialTheme.typography.labelLarge)
                 Text(
                     text = formatBytes(totalHistoricalBytes),
-                    style = MaterialTheme.typography.displaySmall
+                    style = MaterialTheme.typography.displayMedium,
+                    color = MaterialTheme.colorScheme.primary
                 )
-                Spacer(Modifier.height(12.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = {
-                        historicalStartTime = System.currentTimeMillis() - 3600 * 1000
-                    }) { Text("Siste time") }
+                
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "Målt fra: ${dateFormatter.format(Date(historicalStartTime))}",
+                    style = MaterialTheme.typography.bodyMedium
+                )
 
-                    Button(onClick = {
-                        historicalStartTime = System.currentTimeMillis() - 24 * 3600 * 1000
-                    }) { Text("Siste 24t") }
+                Spacer(Modifier.height(14.dp))
+                
+                Button(
+                    onClick = { pickDateTime() },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Velg dato og klokkeslett")
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = { historicalStartTime = System.currentTimeMillis() - 3600 * 1000 }
+                    ) {
+                        Text("Siste time")
+                    }
+                    OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = { historicalStartTime = System.currentTimeMillis() - 24 * 3600 * 1000 }
+                    ) {
+                        Text("Siste 24t")
+                    }
                 }
             }
         }
